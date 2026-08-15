@@ -84,6 +84,8 @@
   #panel{
     position:absolute; top:56px; left:20px;
     width:220px;
+    max-height: calc(100vh - 76px);
+    overflow-y: auto;
     background: var(--panel);
     border:1px solid var(--panel-border);
     border-radius:10px;
@@ -92,6 +94,8 @@
     display:flex; flex-direction:column; gap:12px;
     box-shadow: 0 12px 32px rgba(0,0,0,.5), 0 0 24px rgba(122,18,102,0.25), inset 0 0 0 1px rgba(255,43,214,0.06);
   }
+  #panel::-webkit-scrollbar{ width:6px; }
+  #panel::-webkit-scrollbar-thumb{ background: var(--panel-border); border-radius:3px; }
   .panel-title{
     font-family: var(--mono); font-size:10px; text-transform:uppercase;
     letter-spacing:.14em; color: var(--accent2); margin-bottom:2px;
@@ -159,6 +163,12 @@
     border:1px solid var(--panel-border); border-radius:6px; padding:6px 8px;
     font-family: var(--sans); font-size:12px; margin-top:8px;
   }
+  #model-select{
+    width:100%; background: var(--bg-soft); color:var(--text);
+    border:1px solid var(--panel-border); border-radius:6px; padding:6px 8px;
+    font-family: var(--sans); font-size:12px;
+  }
+  .axis-label{ color: var(--accent2); font-weight:600; }
 
   /* Morph target panel */
   #morph-panel{
@@ -249,6 +259,54 @@
       <div class="panel-title">File</div>
       <div class="btn-row">
         <button class="btn" id="load-btn">Load model</button>
+        <button class="btn" id="add-model-btn">+ Add GLB</button>
+      </div>
+    </div>
+
+    <hr class="sep" />
+
+    <div>
+      <div class="panel-title">Models</div>
+      <select id="model-select"></select>
+      <div class="btn-row" style="margin-top:6px;">
+        <button class="btn" id="remove-model-btn">Remove selected</button>
+      </div>
+    </div>
+
+    <hr class="sep" />
+
+    <div>
+      <div class="panel-title">Transform · selected model</div>
+      <div class="slider-row">
+        <div class="slider-label"><span><span class="axis-label">X</span> — move</span><span id="posx-val">0.00</span></div>
+        <input type="range" id="posx" min="-8" max="8" step="0.05" value="0" />
+      </div>
+      <div class="slider-row">
+        <div class="slider-label"><span><span class="axis-label">Y</span> — move</span><span id="posy-val">0.00</span></div>
+        <input type="range" id="posy" min="-6" max="10" step="0.05" value="0" />
+      </div>
+      <div class="slider-row">
+        <div class="slider-label"><span><span class="axis-label">Z</span> — move</span><span id="posz-val">0.00</span></div>
+        <input type="range" id="posz" min="-8" max="8" step="0.05" value="0" />
+      </div>
+      <div class="slider-row">
+        <div class="slider-label"><span><span class="axis-label">X</span> — turn</span><span id="rotx-val">0°</span></div>
+        <input type="range" id="rotx" min="-180" max="180" step="1" value="0" />
+      </div>
+      <div class="slider-row">
+        <div class="slider-label"><span><span class="axis-label">Y</span> — turn</span><span id="roty-val">0°</span></div>
+        <input type="range" id="roty" min="-180" max="180" step="1" value="0" />
+      </div>
+      <div class="slider-row">
+        <div class="slider-label"><span><span class="axis-label">Z</span> — turn</span><span id="rotz-val">0°</span></div>
+        <input type="range" id="rotz" min="-180" max="180" step="1" value="0" />
+      </div>
+      <div class="slider-row">
+        <div class="slider-label"><span>Size</span><span id="size-val">100%</span></div>
+        <input type="range" id="size" min="20" max="300" step="5" value="100" />
+      </div>
+      <div class="btn-row" style="margin-top:2px;">
+        <button class="btn" id="reset-transform-btn">Reset transform</button>
       </div>
     </div>
 
@@ -283,10 +341,6 @@
     <div class="slider-row">
       <div class="slider-label"><span>Key light</span><span id="light-val">100%</span></div>
       <input type="range" id="light" min="0" max="200" step="5" value="100" />
-    </div>
-    <div class="slider-row">
-      <div class="slider-label"><span>Model size</span><span id="size-val">100%</span></div>
-      <input type="range" id="size" min="20" max="300" step="5" value="100" />
     </div>
     <div class="slider-row">
       <div class="slider-label"><span>Spin length</span><span id="spinlen-val">6s</span></div>
@@ -326,6 +380,7 @@
 
   <div id="stats" style="display:none;">
     <div class="panel-title">Model info</div>
+    <div class="stat-row"><span>Models loaded</span><span id="s-models">0</span></div>
     <div class="stat-row"><span>Meshes</span><span id="s-meshes">0</span></div>
     <div class="stat-row"><span>Triangles</span><span id="s-tris">0</span></div>
     <div class="stat-row"><span>Vertices</span><span id="s-verts">0</span></div>
@@ -466,21 +521,23 @@ grid.material.opacity = 0.35;
 scene.add(grid);
 
 // ---------- State ----------
-let currentModel = null;
-let mixer = null;
+// Multiple models can be loaded side by side. Each entry owns a "container" group
+// (the user-movable/turnable transform — position + rotation, driven by the Transform
+// sliders) wrapping an "inner" group (the auto-fit centering/scale, driven by the Size
+// slider) which in turn holds the actual gltf.scene. Keeping these two transforms
+// separate means auto-fit re-centering never fights with the user dragging a model
+// around the stage or spinning it in place.
+let models = [];       // array of entry objects, see onModelLoaded()
+let selectedIndex = -1; // index into models[] that the Transform/Stats/Anim/Morph panels reflect
 let clock = new THREE.Clock();
-let animActions = [];
-let activeAction = null;
 let autoRotate = false;
 let wireframeOn = false;
 let lightBg = false;
-let baseScale = 1; // auto-fit scale factor for the currently loaded model, at 100% size slider
-let skeletonHelper = null;
 let skeletonOn = true;
-let morphMeshes = []; // meshes on the current model that have morph targets
 let currentEnvTexture = null; // disposed and replaced whenever the environment changes
 let isRecording = false;
 let spinLenSec = 6;
+let pendingLoadMode = 'replace'; // 'replace' clears the scene first; 'add' loads alongside existing models
 
 // Blob URLs for any auxiliary files (loose .bin/textures) dropped alongside a .gltf,
 // keyed by lowercase filename so GLTFLoader's relative-URL requests can be resolved
@@ -512,9 +569,6 @@ loadingManager.setURLModifier((url)=>{
 const gltfLoader = new GLTFLoader(loadingManager);
 gltfLoader.setDRACOLoader(dracoLoader);
 gltfLoader.setMeshoptDecoder(MeshoptDecoder);
-
-// Container-level stats for the last loaded .glb (null for .gltf, which has no single binary container)
-let lastGLBStats = null;
 
 // GLB chunk type constants (little-endian uint32 magic values per the glTF 2.0 binary spec)
 const GLB_MAGIC = 0x46546c67;      // "glTF"
@@ -646,6 +700,13 @@ const morphList = document.getElementById('morph-list');
 const skeletonBtn = document.getElementById('skeleton-btn');
 const recordBtn = document.getElementById('record-btn');
 const hdrInput = document.getElementById('hdr-input');
+const modelSelect = document.getElementById('model-select');
+const posxInput = document.getElementById('posx');
+const posyInput = document.getElementById('posy');
+const poszInput = document.getElementById('posz');
+const rotxInput = document.getElementById('rotx');
+const rotyInput = document.getElementById('roty');
+const rotzInput = document.getElementById('rotz');
 
 function showToast(msg){
   toastEl.textContent = msg;
@@ -662,7 +723,8 @@ function setLoading(pct, show){
 // ---------- Loading file(s) ----------
 // Accepts either a single file (old call sites) or a FileList/array — a loose .gltf
 // commonly needs its .bin plus one or more textures dropped/selected alongside it.
-function loadFiles(files){
+function loadFiles(files, mode){
+  mode = mode || 'replace';
   const list = files instanceof FileList ? Array.from(files) : (Array.isArray(files) ? files : [files]);
   if(!list.length || !list[0]) return;
 
@@ -682,22 +744,22 @@ function loadFiles(files){
   const siblings = list.filter(f=> f !== entry && /\.(gltf|json)$/i.test(entry.name));
   siblings.forEach(f=> extraFileURLs.set(f.name.toLowerCase(), URL.createObjectURL(f)));
 
-  filenameEl.textContent = entry.name + (siblings.length ? ` (+${siblings.length} file${siblings.length>1?'s':''})` : '');
+  const displayName = entry.name + (siblings.length ? ` (+${siblings.length} file${siblings.length>1?'s':''})` : '');
   setLoading(0, true);
 
   if(/\.glb$/i.test(entry.name)){
-    loadGLBFile(entry);
+    loadGLBFile(entry, mode, displayName);
   } else {
     // .gltf and .json are both plain JSON documents referencing external
     // buffers/textures by URL — resolved via extraFileURLs through the LoadingManager.
-    loadGLTFFile(entry);
+    loadGLTFFile(entry, mode, displayName);
   }
 }
 
 // .glb path: read once as an ArrayBuffer (no size ceiling of our own — limited only by
 // what the browser tab can actually hold in memory), validate the container ourselves,
 // then hand the same buffer to GLTFLoader.parse so nothing gets fetched or buffered twice.
-function loadGLBFile(file){
+function loadGLBFile(file, mode, displayName){
   const reader = new FileReader();
   reader.onprogress = (e)=>{
     if(e.lengthComputable) setLoading((e.loaded/e.total)*90, true); // reading is ~90% of the work
@@ -722,8 +784,7 @@ function loadGLBFile(file){
     gltfLoader.parse(
       buffer, '',
       (gltf)=>{
-        lastGLBStats = stats;
-        onModelLoaded(gltf);
+        onModelLoaded(gltf, mode, displayName, stats);
         setLoading(100, true);
         setTimeout(()=> setLoading(0,false), 300);
       },
@@ -739,13 +800,12 @@ function loadGLBFile(file){
 
 // .gltf path: JSON referencing loose external files (bin/textures), so it has to be
 // loaded by URL rather than as one self-contained buffer. No single-container stats apply.
-function loadGLTFFile(file){
+function loadGLTFFile(file, mode, displayName){
   const url = URL.createObjectURL(file);
   gltfLoader.load(
     url,
     (gltf) => {
-      lastGLBStats = null;
-      onModelLoaded(gltf);
+      onModelLoaded(gltf, mode, displayName, null);
       setLoading(100, true);
       setTimeout(()=> setLoading(0,false), 300);
       URL.revokeObjectURL(url);
@@ -764,35 +824,43 @@ function loadGLTFFile(file){
   );
 }
 
-function clearScene(){
-  if(currentModel){
-    scene.remove(currentModel);
-    currentModel.traverse(obj=>{
-      if(obj.geometry) obj.geometry.dispose();
-      if(obj.material){
-        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-        mats.forEach(m=>{
-          Object.values(m).forEach(v=>{ if(v && v.isTexture) v.dispose(); });
-          m.dispose();
-        });
-      }
-    });
-    currentModel = null;
+function disposeEntry(entry){
+  scene.remove(entry.container);
+  entry.model.traverse(obj=>{
+    if(obj.geometry) obj.geometry.dispose();
+    if(obj.material){
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      mats.forEach(m=>{
+        Object.values(m).forEach(v=>{ if(v && v.isTexture) v.dispose(); });
+        m.dispose();
+      });
+    }
+  });
+  if(entry.mixer) entry.mixer.stopAllAction();
+  if(entry.skeletonHelper){
+    scene.remove(entry.skeletonHelper);
+    entry.skeletonHelper.geometry?.dispose();
+    entry.skeletonHelper.material?.dispose();
   }
-  if(mixer){ mixer.stopAllAction(); mixer = null; }
-  animActions = [];
-  activeAction = null;
-
-  if(skeletonHelper){ scene.remove(skeletonHelper); skeletonHelper.dispose?.(); skeletonHelper = null; }
-  morphMeshes = [];
-  morphList.innerHTML = '';
-  morphPanel.classList.remove('show');
 }
 
-function onModelLoaded(gltf){
-  clearScene();
+function clearAllModels(){
+  models.forEach(e=> disposeEntry(e));
+  models = [];
+  selectedIndex = -1;
+  animPanel.classList.remove('show');
+  morphPanel.classList.remove('show');
+  morphList.innerHTML = '';
+  skeletonBtn.style.display = 'none';
+}
+
+function onModelLoaded(gltf, mode, displayName, glbStats){
+  mode = mode || 'replace';
+  if(mode !== 'add') clearAllModels();
+
   const model = gltf.scene;
   let hasSkinnedMesh = false;
+  const morphMeshes = [];
   model.traverse(obj=>{
     if(obj.isMesh){
       obj.castShadow = true;
@@ -806,97 +874,58 @@ function onModelLoaded(gltf){
     if(obj.isSkinnedMesh) hasSkinnedMesh = true;
   });
 
-  if(hasSkinnedMesh){
-    skeletonHelper = new THREE.SkeletonHelper(model);
-    skeletonHelper.visible = skeletonOn;
-    scene.add(skeletonHelper);
-    skeletonBtn.style.display = 'flex';
-    skeletonBtn.classList.toggle('active', skeletonOn);
-  } else {
-    skeletonBtn.style.display = 'none';
-  }
-  buildMorphPanel();
+  // inner: auto-fit centering + Size slider. container: user Move/Turn transform.
+  const inner = new THREE.Group();
+  inner.add(model);
+  const container = new THREE.Group();
+  container.add(inner);
 
-  // Center & scale to fit a ~2.5 unit stage
+  // Stagger additional models along X so they don't spawn stacked on top of each other —
+  // the Transform sliders can move them wherever the user actually wants them.
+  const newIdx = models.length;
+  if(newIdx > 0) container.position.x = newIdx * 3;
+  scene.add(container);
+
   const box = new THREE.Box3().setFromObject(model);
   const size = box.getSize(new THREE.Vector3());
   const maxDim = Math.max(size.x, size.y, size.z) || 1;
-  baseScale = 2.5 / maxDim;
 
-  scene.add(model);
-  currentModel = model;
-  applyModelSize(1); // center, ground, and scale at the default 100% size
+  const entry = {
+    container, inner, model, gltf,
+    name: displayName || `Model ${models.length + 1}`,
+    baseScale: 2.5 / maxDim, sizeMult: 1,
+    mixer: null, animActions: [], activeAction: null,
+    morphMeshes, skeletonHelper: null, hasSkinnedMesh,
+    glbStats: glbStats || null,
+  };
 
-  sizeInput.value = 100;
-  document.getElementById('size-val').textContent = '100%';
+  applyEntrySize(entry, 1); // center, ground, and scale at the default 100% size
 
-  // Frame camera
-  const finalBox = new THREE.Box3().setFromObject(model);
-  const finalSize = finalBox.getSize(new THREE.Vector3());
-  const finalCenter = finalBox.getCenter(new THREE.Vector3());
-  const dist = Math.max(finalSize.x, finalSize.y, finalSize.z) * 1.9 + 1;
-  camera.position.set(dist*0.7, dist*0.55 + finalSize.y*0.3, dist*0.9);
-  controls.target.copy(finalCenter);
-  controls.update();
-  fitDefaults.camPos = camera.position.clone();
-  fitDefaults.target = controls.target.clone();
-
-  // Stats
-  let meshes=0, tris=0, verts=0;
-  const matSet = new Set();
-  model.traverse(obj=>{
-    if(obj.isMesh){
-      meshes++;
-      const geo = obj.geometry;
-      if(geo){
-        const posAttr = geo.attributes.position;
-        if(posAttr) verts += posAttr.count;
-        tris += geo.index ? geo.index.count/3 : (posAttr ? posAttr.count/3 : 0);
-      }
-      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
-      mats.forEach(m=> m && matSet.add(m.uuid));
-    }
-  });
-  document.getElementById('s-meshes').textContent = meshes;
-  document.getElementById('s-tris').textContent = Math.round(tris).toLocaleString();
-  document.getElementById('s-verts').textContent = verts.toLocaleString();
-  document.getElementById('s-mats').textContent = matSet.size;
-  document.getElementById('s-anims').textContent = (gltf.animations||[]).length;
-
-  if(lastGLBStats){
-    document.getElementById('s-filesize').textContent = formatBytes(lastGLBStats.totalBytes);
-    document.getElementById('s-json').textContent = formatBytes(lastGLBStats.jsonBytes);
-    document.getElementById('s-bin').textContent = formatBytes(lastGLBStats.binBytes);
-    document.getElementById('s-images').textContent = lastGLBStats.imageCount
-      ? `${lastGLBStats.imageCount} (${formatBytes(lastGLBStats.imageBytes)})`
-      : '0';
-    const comp = [];
-    if(lastGLBStats.usesDraco) comp.push('Draco');
-    if(lastGLBStats.usesMeshopt) comp.push('meshopt');
-    document.getElementById('s-compression').textContent = comp.length ? comp.join(' + ') : 'None';
-  } else {
-    // .gltf (JSON + loose files) has no single binary container to report on
-    ['s-filesize','s-json','s-bin','s-images','s-compression'].forEach(id=>{
-      document.getElementById(id).textContent = 'n/a (JSON)';
-    });
+  if(hasSkinnedMesh){
+    entry.skeletonHelper = new THREE.SkeletonHelper(model);
+    entry.skeletonHelper.visible = skeletonOn;
+    scene.add(entry.skeletonHelper);
   }
 
-  // Animations
   if(gltf.animations && gltf.animations.length){
-    mixer = new THREE.AnimationMixer(model);
-    animSelect.innerHTML = '';
-    gltf.animations.forEach((clip, i)=>{
-      const opt = document.createElement('option');
-      opt.value = i;
-      opt.textContent = clip.name || `Clip ${i+1}`;
-      animSelect.appendChild(opt);
-      animActions.push(mixer.clipAction(clip));
-    });
-    animPanel.classList.add('show');
-    selectAnim(0);
-  } else {
-    animPanel.classList.remove('show');
+    entry.mixer = new THREE.AnimationMixer(model);
+    gltf.animations.forEach(clip=> entry.animActions.push(entry.mixer.clipAction(clip)));
+    selectAnim(entry, 0); // preps a paused default clip; play state is per-model, not auto-started
   }
+
+  models.push(entry);
+  selectedIndex = models.length - 1;
+
+  if(mode === 'add' && newIdx > 0){
+    showToast(`Added "${entry.name}" — use the Transform sliders to move or turn it.`);
+  }
+
+  // Only re-frame the camera on a fresh scene or the very first model — adding more
+  // models keeps the current view stable instead of yanking the camera around.
+  if(mode !== 'add' || models.length === 1) fitCameraToAll();
+
+  updateModelSelect();
+  refreshSelectedUI();
 
   dropzone.style.display = 'none';
   panel.style.display = 'flex';
@@ -905,25 +934,39 @@ function onModelLoaded(gltf){
 
 const fitDefaults = { camPos:null, target:null };
 
-// Rescales the current model relative to its auto-fit baseScale, then re-centers
-// it on X/Z and drops it back onto the ground plane so resizing never leaves it
-// floating or off-center.
-function applyModelSize(mult){
-  if(!currentModel) return;
-  currentModel.position.set(0,0,0);
-  currentModel.scale.setScalar(baseScale * mult);
-  const box = new THREE.Box3().setFromObject(currentModel);
+function fitCameraToAll(){
+  if(!models.length) return;
+  const box = new THREE.Box3();
+  models.forEach(e=> box.expandByObject(e.container));
+  const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
-  currentModel.position.sub(center);
-  const box2 = new THREE.Box3().setFromObject(currentModel);
-  currentModel.position.y -= box2.min.y;
+  const dist = Math.max(size.x, size.y, size.z) * 1.9 + 1;
+  camera.position.set(center.x + dist*0.7, center.y + dist*0.55 + size.y*0.3, center.z + dist*0.9);
+  controls.target.copy(center);
+  controls.update();
+  fitDefaults.camPos = camera.position.clone();
+  fitDefaults.target = controls.target.clone();
 }
 
-// Builds one slider per morph target across every mesh on the current model that has
+// Rescales an entry's model relative to its auto-fit baseScale, then re-centers it on
+// X/Z and drops it back onto its local ground plane — this lives on the "inner" group,
+// so it never fights with the container's user-driven Move/Turn transform.
+function applyEntrySize(entry, mult){
+  entry.inner.position.set(0,0,0);
+  entry.inner.scale.setScalar(entry.baseScale * mult);
+  const box = new THREE.Box3().setFromObject(entry.inner);
+  const center = box.getCenter(new THREE.Vector3());
+  entry.inner.position.sub(center);
+  const box2 = new THREE.Box3().setFromObject(entry.inner);
+  entry.inner.position.y -= box2.min.y;
+  entry.sizeMult = mult;
+}
+
+// Builds one slider per morph target across every mesh on the given model that has
 // them (a model can have several meshes each with their own dictionary of target names).
-function buildMorphPanel(){
+function buildMorphPanel(morphMeshes){
   morphList.innerHTML = '';
-  if(!morphMeshes.length){
+  if(!morphMeshes || !morphMeshes.length){
     morphPanel.classList.remove('show');
     return;
   }
@@ -939,6 +982,9 @@ function buildMorphPanel(){
       `;
       const input = row.querySelector('input');
       const valEl = row.querySelector('.morph-val');
+      const initial = mesh.morphTargetInfluences[idx] || 0;
+      input.value = initial;
+      valEl.textContent = initial.toFixed(2);
       input.addEventListener('input', ()=>{
         mesh.morphTargetInfluences[idx] = parseFloat(input.value);
         valEl.textContent = parseFloat(input.value).toFixed(2);
@@ -949,14 +995,120 @@ function buildMorphPanel(){
   morphPanel.classList.add('show');
 }
 
-function selectAnim(idx){
-  if(activeAction) activeAction.stop();
-  activeAction = animActions[idx];
-  if(activeAction){
-    activeAction.reset();
-    playBtn.textContent = '▶ Play';
-    playBtn.classList.remove('active');
+function selectAnim(entry, idx){
+  if(entry.activeAction) entry.activeAction.stop();
+  entry.activeAction = entry.animActions[idx];
+  if(entry.activeAction) entry.activeAction.reset();
+}
+
+// ---------- Multi-model UI: selector, transform, stats, anim panel refresh ----------
+function updateModelSelect(){
+  modelSelect.innerHTML = '';
+  models.forEach((e, i)=>{
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = `${i+1}. ${e.name}`;
+    modelSelect.appendChild(opt);
+  });
+  if(selectedIndex >= 0) modelSelect.value = selectedIndex;
+}
+
+function updateSkeletonBtnVisibility(){
+  const any = models.some(e=> e.hasSkinnedMesh);
+  skeletonBtn.style.display = any ? 'flex' : 'none';
+  skeletonBtn.classList.toggle('active', skeletonOn);
+}
+
+function refreshTransformUI(entry){
+  posxInput.value = entry.container.position.x;
+  document.getElementById('posx-val').textContent = entry.container.position.x.toFixed(2);
+  posyInput.value = entry.container.position.y;
+  document.getElementById('posy-val').textContent = entry.container.position.y.toFixed(2);
+  poszInput.value = entry.container.position.z;
+  document.getElementById('posz-val').textContent = entry.container.position.z.toFixed(2);
+
+  const rx = Math.round(THREE.MathUtils.radToDeg(entry.container.rotation.x));
+  const ry = Math.round(THREE.MathUtils.radToDeg(entry.container.rotation.y));
+  const rz = Math.round(THREE.MathUtils.radToDeg(entry.container.rotation.z));
+  rotxInput.value = rx; document.getElementById('rotx-val').textContent = rx + '°';
+  rotyInput.value = ry; document.getElementById('roty-val').textContent = ry + '°';
+  rotzInput.value = rz; document.getElementById('rotz-val').textContent = rz + '°';
+
+  const pct = Math.round(entry.sizeMult * 100);
+  sizeInput.value = pct;
+  document.getElementById('size-val').textContent = pct + '%';
+}
+
+function refreshStatsForEntry(entry){
+  let meshes=0, tris=0, verts=0;
+  const matSet = new Set();
+  entry.model.traverse(obj=>{
+    if(obj.isMesh){
+      meshes++;
+      const geo = obj.geometry;
+      if(geo){
+        const posAttr = geo.attributes.position;
+        if(posAttr) verts += posAttr.count;
+        tris += geo.index ? geo.index.count/3 : (posAttr ? posAttr.count/3 : 0);
+      }
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      mats.forEach(m=> m && matSet.add(m.uuid));
+    }
+  });
+  document.getElementById('s-models').textContent = models.length;
+  document.getElementById('s-meshes').textContent = meshes;
+  document.getElementById('s-tris').textContent = Math.round(tris).toLocaleString();
+  document.getElementById('s-verts').textContent = verts.toLocaleString();
+  document.getElementById('s-mats').textContent = matSet.size;
+  document.getElementById('s-anims').textContent = entry.animActions.length;
+
+  if(entry.glbStats){
+    document.getElementById('s-filesize').textContent = formatBytes(entry.glbStats.totalBytes);
+    document.getElementById('s-json').textContent = formatBytes(entry.glbStats.jsonBytes);
+    document.getElementById('s-bin').textContent = formatBytes(entry.glbStats.binBytes);
+    document.getElementById('s-images').textContent = entry.glbStats.imageCount
+      ? `${entry.glbStats.imageCount} (${formatBytes(entry.glbStats.imageBytes)})`
+      : '0';
+    const comp = [];
+    if(entry.glbStats.usesDraco) comp.push('Draco');
+    if(entry.glbStats.usesMeshopt) comp.push('meshopt');
+    document.getElementById('s-compression').textContent = comp.length ? comp.join(' + ') : 'None';
+  } else {
+    ['s-filesize','s-json','s-bin','s-images','s-compression'].forEach(id=>{
+      document.getElementById(id).textContent = 'n/a (JSON)';
+    });
   }
+}
+
+function refreshAnimPanelUI(entry){
+  if(entry.gltf.animations && entry.gltf.animations.length){
+    animSelect.innerHTML = '';
+    entry.gltf.animations.forEach((clip, i)=>{
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = clip.name || `Clip ${i+1}`;
+      animSelect.appendChild(opt);
+    });
+    const activeIdx = entry.animActions.indexOf(entry.activeAction);
+    animSelect.value = activeIdx >= 0 ? activeIdx : 0;
+    animPanel.classList.add('show');
+    const running = entry.activeAction && entry.activeAction.isRunning() && !entry.activeAction.paused;
+    playBtn.textContent = running ? '❚❚ Pause' : '▶ Play';
+    playBtn.classList.toggle('active', running);
+  } else {
+    animPanel.classList.remove('show');
+  }
+}
+
+function refreshSelectedUI(){
+  if(selectedIndex < 0 || !models[selectedIndex]) return;
+  const entry = models[selectedIndex];
+  refreshTransformUI(entry);
+  refreshStatsForEntry(entry);
+  refreshAnimPanelUI(entry);
+  buildMorphPanel(entry.morphMeshes);
+  updateSkeletonBtnVisibility();
+  filenameEl.textContent = models.length > 1 ? `${models.length} models · ${entry.name}` : entry.name;
 }
 
 // ---------- Turntable spin recording ----------
@@ -1034,9 +1186,13 @@ function recordSpin(){
 }
 
 // ---------- UI events ----------
-document.getElementById('browse-btn').addEventListener('click', ()=> fileInput.click());
-document.getElementById('load-btn').addEventListener('click', ()=> fileInput.click());
-fileInput.addEventListener('change', e=> loadFiles(e.target.files));
+document.getElementById('browse-btn').addEventListener('click', ()=>{ pendingLoadMode='replace'; fileInput.click(); });
+document.getElementById('load-btn').addEventListener('click', ()=>{ pendingLoadMode='replace'; fileInput.click(); });
+document.getElementById('add-model-btn').addEventListener('click', ()=>{ pendingLoadMode='add'; fileInput.click(); });
+fileInput.addEventListener('change', e=>{
+  loadFiles(e.target.files, pendingLoadMode);
+  fileInput.value = ''; // allow re-selecting the same file again later
+});
 
 ['dragenter','dragover'].forEach(ev=>{
   window.addEventListener(ev, e=>{ e.preventDefault(); dropzone.classList.add('dragover'); });
@@ -1053,14 +1209,14 @@ window.addEventListener('drop', e=>{
 document.getElementById('wireframe-btn').addEventListener('click', (e)=>{
   wireframeOn = !wireframeOn;
   e.target.classList.toggle('active', wireframeOn);
-  if(currentModel){
-    currentModel.traverse(obj=>{
+  models.forEach(entry=>{
+    entry.model.traverse(obj=>{
       if(obj.isMesh && obj.material){
         const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
         mats.forEach(m=>{ if('wireframe' in m) m.wireframe = wireframeOn; });
       }
     });
-  }
+  });
 });
 
 document.getElementById('grid-btn').addEventListener('click', (e)=>{
@@ -1126,7 +1282,7 @@ hdrInput.addEventListener('change', (e)=>{
 skeletonBtn.addEventListener('click', (e)=>{
   skeletonOn = !skeletonOn;
   e.target.classList.toggle('active', skeletonOn);
-  if(skeletonHelper) skeletonHelper.visible = skeletonOn;
+  models.forEach(entry=>{ if(entry.skeletonHelper) entry.skeletonHelper.visible = skeletonOn; });
 });
 
 const spinlenInput = document.getElementById('spinlen');
@@ -1137,7 +1293,7 @@ spinlenInput.addEventListener('input', ()=>{
 
 recordBtn.addEventListener('click', ()=>{
   if(isRecording) return;
-  if(!currentModel){ showToast('Load a model first.'); return; }
+  if(!models.length){ showToast('Load a model first.'); return; }
   recordSpin();
 });
 
@@ -1156,23 +1312,83 @@ lightInput.addEventListener('input', ()=>{
 
 const sizeInput = document.getElementById('size');
 sizeInput.addEventListener('input', ()=>{
+  if(selectedIndex < 0) return;
   const pct = parseFloat(sizeInput.value);
-  applyModelSize(pct/100);
+  applyEntrySize(models[selectedIndex], pct/100);
   document.getElementById('size-val').textContent = pct + '%';
 });
 
-animSelect.addEventListener('change', ()=> selectAnim(parseInt(animSelect.value)));
+animSelect.addEventListener('change', ()=>{
+  if(selectedIndex < 0) return;
+  selectAnim(models[selectedIndex], parseInt(animSelect.value));
+  refreshAnimPanelUI(models[selectedIndex]);
+});
 playBtn.addEventListener('click', ()=>{
-  if(!activeAction) return;
-  if(activeAction.isRunning()){
-    activeAction.paused = true;
+  if(selectedIndex < 0) return;
+  const entry = models[selectedIndex];
+  if(!entry.activeAction) return;
+  if(entry.activeAction.isRunning() && !entry.activeAction.paused){
+    entry.activeAction.paused = true;
     playBtn.textContent = '▶ Play';
     playBtn.classList.remove('active');
   } else {
-    activeAction.paused = false;
-    activeAction.play();
+    entry.activeAction.paused = false;
+    entry.activeAction.play();
     playBtn.textContent = '❚❚ Pause';
     playBtn.classList.add('active');
+  }
+});
+
+// ---------- Model select / Transform (move + turn) / remove ----------
+modelSelect.addEventListener('change', ()=>{
+  selectedIndex = parseInt(modelSelect.value);
+  refreshSelectedUI();
+});
+
+function wireTransformAxis(posInput, rotInput, axis){
+  posInput.addEventListener('input', ()=>{
+    if(selectedIndex < 0) return;
+    const v = parseFloat(posInput.value);
+    models[selectedIndex].container.position[axis] = v;
+    document.getElementById('pos'+axis+'-val').textContent = v.toFixed(2);
+  });
+  rotInput.addEventListener('input', ()=>{
+    if(selectedIndex < 0) return;
+    const deg = parseFloat(rotInput.value);
+    models[selectedIndex].container.rotation[axis] = THREE.MathUtils.degToRad(deg);
+    document.getElementById('rot'+axis+'-val').textContent = Math.round(deg) + '°';
+  });
+}
+wireTransformAxis(posxInput, rotxInput, 'x');
+wireTransformAxis(posyInput, rotyInput, 'y');
+wireTransformAxis(poszInput, rotzInput, 'z');
+
+document.getElementById('reset-transform-btn').addEventListener('click', ()=>{
+  if(selectedIndex < 0) return;
+  const entry = models[selectedIndex];
+  entry.container.position.set(0,0,0);
+  entry.container.rotation.set(0,0,0);
+  refreshTransformUI(entry);
+});
+
+document.getElementById('remove-model-btn').addEventListener('click', ()=>{
+  if(selectedIndex < 0 || !models[selectedIndex]) return;
+  disposeEntry(models[selectedIndex]);
+  models.splice(selectedIndex, 1);
+  if(!models.length){
+    selectedIndex = -1;
+    panel.style.display = 'none';
+    statsEl.style.display = 'none';
+    dropzone.style.display = 'flex';
+    filenameEl.textContent = '';
+    animPanel.classList.remove('show');
+    morphPanel.classList.remove('show');
+    skeletonBtn.style.display = 'none';
+  } else {
+    selectedIndex = Math.min(selectedIndex, models.length - 1);
+    updateModelSelect();
+    refreshSelectedUI();
+    fitCameraToAll();
   }
 });
 
@@ -1241,7 +1457,7 @@ function animate(){
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
   applyWASD(dt);
-  if(mixer) mixer.update(dt);
+  models.forEach(entry=>{ if(entry.mixer) entry.mixer.update(dt); });
   if(!isRecording) controls.update();
   renderer.render(scene, camera);
 }
