@@ -8,4 +8,4 @@ BUT, for everyone who does not want to do the set up... you can try the glb-view
 
 BUT, i also have the original file without the movable axis tools and (+add glb button), Im still trying to figure out how to insert them into the htmml built-in, sorry y'all and the file your looking for is offline-glb-viewer. 
 
-TEST THE ONLINE/OFFLINE FIRST FOR THE PREVIEW.
+TEST THE ONLINE OR OFFLINE FIRST FOR THE PREVIEW.
